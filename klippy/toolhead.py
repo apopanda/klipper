@@ -254,6 +254,9 @@ class ToolHead:
         # Register handlers
         self.printer.register_event_handler("klippy:shutdown",
                                             self._handle_shutdown)
+        self.printer.register_event_handler("toolhead:stop_movement",
+                                       self._handle_stop_movement)
+
     # Print time tracking
     def _advance_move_time(self, next_print_time):
         self.print_time = max(self.print_time, next_print_time)
@@ -519,6 +522,12 @@ class ToolHead:
     def _handle_shutdown(self):
         self.can_pause = False
         self.lookahead.reset()
+
+    def _handle_stop_movement(self):
+        self.mcu.stop_steppers()
+        self.immediate_pause()
+        self.flush_step_generation()
+
     def get_kinematics(self):
         return self.kin
     def get_trapq(self):
@@ -549,6 +558,10 @@ class ToolHead:
         return (self.max_velocity, self.max_accel,
                 self.square_corner_velocity, self.min_cruise_ratio)
 
+    def immediate_pause(self):
+        self.reactor.pause(self.reactor.NOW)
+
+
 # Support common G-Code commands relative to the toolhead
 class ToolHeadCommandHelper:
     def __init__(self, config):
@@ -558,6 +571,8 @@ class ToolHeadCommandHelper:
         gcode = self.printer.lookup_object('gcode')
         gcode.register_command('G4', self.cmd_G4)
         gcode.register_command('M400', self.cmd_M400)
+        gcode.register_command('M0', self.cmd_M0)
+        gcode.register_command('JOG', self.cmd_jog_mode)
         gcode.register_command('SET_VELOCITY_LIMIT',
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
@@ -600,6 +615,12 @@ class ToolHeadCommandHelper:
                 return
             accel = min(p, t)
         self.toolhead.set_max_velocities(None, accel, None, None)
+
+    def cmd_M0(self, gcmd):
+        self.printer.send_event("toolhead:stop_movement")
+
+    def cmd_jog_mode(self, gcmd):
+        self.printer.send_event("toolhead:jog_mode")
 
 def add_printer_objects(config):
     printer = config.get_printer()

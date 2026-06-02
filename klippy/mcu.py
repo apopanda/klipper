@@ -186,6 +186,9 @@ class MCU_trsync:
         self._steppers.append(stepper)
     def get_steppers(self):
         return list(self._steppers)
+    def stop_steppers(self):
+        for stepper in self._steppers:
+            self._stepper_stop_cmd.send([stepper.get_oid(), self._oid])
     def _build_config(self):
         mcu = self._mcu
         # Setup config
@@ -322,6 +325,11 @@ class TriggerDispatch:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
         return self._trigger_completion
+
+    def stop_steppers(self):
+        for trsync in self._trsyncs:
+            trsync.stop_steppers()
+
     def wait_end(self, end_time):
         etrsync = self._trsyncs[0]
         etrsync.set_home_end_time(end_time)
@@ -347,13 +355,13 @@ class MCU_endstop:
         self._home_cmd = self._query_cmd = None
         self._mcu.register_config_callback(self._build_config)
         self._rest_ticks = 0
-        self._dispatch = TriggerDispatch(mcu)
+
     def get_mcu(self):
         return self._mcu
     def add_stepper(self, stepper):
-        self._dispatch.add_stepper(stepper)
+        self._mcu.get_dispatch().add_stepper(stepper)
     def get_steppers(self):
-        return self._dispatch.get_steppers()
+        return self._mcu.get_dispatch().get_steppers()
     def _build_config(self):
         # Setup config
         self._mcu.add_config_cmd("config_endstop oid=%d pin=%s pull_up=%d"
@@ -363,7 +371,7 @@ class MCU_endstop:
             " rest_ticks=0 pin_value=0 trsync_oid=0 trigger_reason=0"
             % (self._oid,), on_restart=True)
         # Lookup commands
-        cmd_queue = self._dispatch.get_command_queue()
+        cmd_queue = self._mcu.get_dispatch().get_command_queue()
         self._home_cmd = self._mcu.lookup_command(
             "endstop_home oid=%c clock=%u sample_ticks=%u sample_count=%c"
             " rest_ticks=%u pin_value=%c trsync_oid=%c trigger_reason=%c",
@@ -377,17 +385,17 @@ class MCU_endstop:
         clock = self._mcu.print_time_to_clock(print_time)
         rest_ticks = self._mcu.print_time_to_clock(print_time+rest_time) - clock
         self._rest_ticks = rest_ticks
-        trigger_completion = self._dispatch.start(print_time)
+        trigger_completion = self._mcu.get_dispatch().start(print_time)
         self._home_cmd.send(
             [self._oid, clock, self._mcu.seconds_to_clock(sample_time),
              sample_count, rest_ticks, triggered ^ self._invert,
-             self._dispatch.get_oid(), MCU_trsync.REASON_ENDSTOP_HIT],
+             self._mcu.get_dispatch().get_oid(), MCU_trsync.REASON_ENDSTOP_HIT],
             reqclock=clock)
         return trigger_completion
     def home_wait(self, home_end_time):
-        self._dispatch.wait_end(home_end_time)
+        self._mcu.get_dispatch().wait_end(home_end_time)
         self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
-        res = self._dispatch.stop()
+        res = self._mcu.get_dispatch().stop()
         if res >= MCU_trsync.REASON_COMMS_TIMEOUT:
             cmderr = self._mcu.get_printer().command_error
             raise cmderr("Communication timeout during homing")
@@ -1156,6 +1164,7 @@ class MCU:
         self._serial = self._conn_helper.get_serial()
         self._config_helper = MCUConfigHelper(self, self._conn_helper)
         self._stats_helper = MCUStatsHelper(self, self._conn_helper)
+        self._dispatch = TriggerDispatch(self)
         printer.load_object(config, "error_mcu")
         # Alter time reporting when debugging
         if self.is_fileoutput():
@@ -1235,6 +1244,10 @@ class MCU:
         return self._stats_helper.get_status(eventtime)
     def stats(self, eventtime):
         return self._stats_helper.stats(eventtime)
+    def get_dispatch(self):
+        return self._dispatch
+    def stop_steppers(self):
+        self._dispatch.stop_steppers()
 
 def add_printer_objects(config):
     printer = config.get_printer()
