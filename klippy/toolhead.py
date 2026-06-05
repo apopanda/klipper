@@ -256,6 +256,8 @@ class ToolHead:
                                             self._handle_shutdown)
         self.printer.register_event_handler("toolhead:stop_movement",
                                        self._handle_stop_movement)
+        self.printer.register_event_handler("toolhead:jog_mode",
+                                            self._handle_jog_mode)
 
     # Print time tracking
     def _advance_move_time(self, next_print_time):
@@ -528,6 +530,9 @@ class ToolHead:
         self.immediate_pause()
         self.flush_step_generation()
 
+    def _handle_jog_mode(self):
+        self.printer.jog_mode()
+
     def get_kinematics(self):
         return self.kin
     def get_trapq(self):
@@ -620,7 +625,8 @@ class ToolHeadCommandHelper:
         self.printer.send_event("toolhead:stop_movement")
 
     def cmd_jog_mode(self, gcmd):
-        self.printer.send_event("toolhead:jog_mode")
+        if self.printer.get_state_message()[1] in ['ready', 'jogging']:
+            self.printer.send_event("toolhead:jog_mode")
 
 def add_printer_objects(config):
     printer = config.get_printer()

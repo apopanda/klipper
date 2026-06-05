@@ -43,6 +43,9 @@ class IdleTimeout:
         self.timeout_timer = self.reactor.register_timer(self.timeout_handler)
         self.printer.register_event_handler("toolhead:sync_print_time",
                                             self.handle_sync_print_time)
+        self.printer.register_event_handler("toolhead:jog_mode", self.handle_jogging)
+    def handle_jogging(self):
+        self.state = "Jogging"
     def transition_idle_state(self, eventtime):
         self.state = "Printing"
         try:
@@ -91,8 +94,9 @@ class IdleTimeout:
             # Gcode class busy
             return eventtime + READY_TIMEOUT
         # Transition to "ready" state
-        self.state = "Ready"
-        self.printer.send_event("idle_timeout:ready",
+        if self.state is not "Jogging":
+            self.state = "Ready"
+            self.printer.send_event("idle_timeout:ready",
                                 est_print_time + PIN_MIN_TIME)
         return eventtime + self.idle_timeout
     def handle_sync_print_time(self, curtime, print_time, est_print_time):
