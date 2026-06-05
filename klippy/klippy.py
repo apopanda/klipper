@@ -231,8 +231,10 @@ class Printer:
     def jog_mode(self):
         self.in_jogging_state = not self.in_jogging_state
         if self.in_jogging_state:
+            self.reactor.pause(self.reactor.NOW)
             self._set_state(message_jogging)
         else:
+            self.reactor.run()
             self._set_state(message_ready)
     def invoke_async_shutdown(self, msg, details={}):
         self.reactor.register_async_callback(

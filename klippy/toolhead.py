@@ -528,10 +528,12 @@ class ToolHead:
     def _handle_stop_movement(self):
         self.mcu.stop_steppers()
         self.immediate_pause()
+        self.lookahead.reset()
         self.flush_step_generation()
 
     def _handle_jog_mode(self):
         self.printer.jog_mode()
+        self.enable_steppers(True)
 
     def get_kinematics(self):
         return self.kin
@@ -565,8 +567,10 @@ class ToolHead:
 
     def immediate_pause(self):
         self.reactor.pause(self.reactor.NOW)
-
-
+    def enable_steppers(self, enable):
+            stepper_names = [s.get_name() for s in self.get_kinematics().get_steppers()]
+            stepper_enable = self.printer.lookup_object('stepper_enable')
+            stepper_enable.set_motors_enable(stepper_names, enable)
 # Support common G-Code commands relative to the toolhead
 class ToolHeadCommandHelper:
     def __init__(self, config):
@@ -578,6 +582,7 @@ class ToolHeadCommandHelper:
         gcode.register_command('M400', self.cmd_M400)
         gcode.register_command('M0', self.cmd_M0)
         gcode.register_command('JOG', self.cmd_jog_mode)
+        gcode.register_command('JOG_MOVE', self.cmd_jog_move)
         gcode.register_command('SET_VELOCITY_LIMIT',
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
@@ -627,6 +632,24 @@ class ToolHeadCommandHelper:
     def cmd_jog_mode(self, gcmd):
         if self.printer.get_state_message()[1] in ['ready', 'jogging']:
             self.printer.send_event("toolhead:jog_mode")
+
+    def cmd_jog_move(self,gcmd):
+        if self.printer.is_jogging():
+            gcmd.ack()
+            params = gcmd.get_command_parameters()
+            axis_map = {'X': 0, 'Y': 1, 'Z': 2}
+            # gcode_speed = gcmd.get_float('F',None, above=0.) speeds?
+            steppers = self.toolhead.get_kinematics().get_steppers()
+
+            for axis, pos in axis_map.items():
+                if axis in params:
+                    dist = float(params[axis])
+                    for stepper in steppers:
+                        if stepper.is_active_axis(axis.lower()):
+                            stepper.low_level_move( abs(dist),  1 if dist >= 0 else 0 )
+        else:
+            gcmd.respond_info('Not in jogging mode. Enable with gcode command JOG')
+
 
 def add_printer_objects(config):
     printer = config.get_printer()

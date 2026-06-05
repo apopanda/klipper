@@ -53,6 +53,7 @@ class MCU_stepper:
         self._stepper_kinematics = None
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
+        self._step_cmd = self._dir_cmd = None
         printer.register_event_handler('klippy:connect',
                                        self._query_mcu_position)
     def get_mcu(self):
@@ -116,10 +117,11 @@ class MCU_stepper:
                                       invert_step, step_pulse_ticks))
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
-        step_cmd_tag = self._mcu.lookup_command(
-            "queue_step oid=%c interval=%u count=%hu add=%hi").get_command_tag()
-        dir_cmd_tag = self._mcu.lookup_command(
-            "set_next_step_dir oid=%c dir=%c").get_command_tag()
+        # cmd_queue = self._mcu.get_dispatch().get_command_queue()
+        self._step_cmd = self._mcu.lookup_command("queue_step oid=%c interval=%u count=%hu add=%hi")
+        self._dir_cmd = self._mcu.lookup_command("set_next_step_dir oid=%c dir=%c")
+        step_cmd_tag = self._step_cmd.get_command_tag()
+        dir_cmd_tag = self._dir_cmd.get_command_tag()
         self._reset_cmd_tag = self._mcu.lookup_command(
             "reset_step_clock oid=%c clock=%u").get_command_tag()
         self._get_position_cmd = self._mcu.lookup_query_command(
@@ -129,6 +131,11 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_fill(self._stepqueue, self._oid, max_error_ticks,
                                   step_cmd_tag, dir_cmd_tag)
+
+    def low_level_move(self, distance, direction):
+        self._dir_cmd.send([self.get_oid(), direction])
+        duration = self._mcu.seconds_to_clock(self._step_pulse_duration)
+        self._step_cmd.send([self.get_oid(), duration, int(distance // self.get_step_dist()),0])
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
