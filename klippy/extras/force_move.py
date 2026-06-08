@@ -33,11 +33,19 @@ class ForceMove:
         self.steppers = {}
         # Setup iterative solver
         self.motion_queuing = self.printer.load_object(config, 'motion_queuing')
-        self.trapq = self.motion_queuing.allocate_trapq()
+        self.trapq = {'x':self.motion_queuing.allocate_trapq(),
+                      'y':self.motion_queuing.allocate_trapq(),
+                      'z':self.motion_queuing.allocate_trapq()}
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
         ffi_main, ffi_lib = chelper.get_ffi()
-        self.stepper_kinematics = ffi_main.gc(
-            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+        self.stepper_kinematics = {
+            'x': ffi_main.gc(
+            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free),
+            'y': ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'y'), ffi_lib.free),
+            'z': ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'z'), ffi_lib.free)
+        }
         # Register commands
         self._enable_force_move = config.getboolean("enable_force_move", False)
         if self._enable_force_move:
@@ -72,23 +80,62 @@ class ForceMove:
         stepper_name = stepper.get_name()
         stepper_enable = self.printer.lookup_object('stepper_enable')
         stepper_enable.set_motors_enable([stepper_name], False)
-    def manual_move(self, stepper, dist, speed, accel=0.):
+    def manual_move(self, stepper, dist, speed, accel=0., queue_several=False, axis='x'):
         toolhead = self.printer.lookup_object('toolhead')
-        toolhead.flush_step_generation()
-        prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics)
-        prev_trapq = stepper.set_trapq(self.trapq)
+        if not queue_several:
+            toolhead.flush_step_generation()
+
+        prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics[axis])
+        prev_trapq = stepper.set_trapq(self.trapq[axis])
+
         stepper.set_position((0., 0., 0.))
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(dist, speed, accel)
         print_time = toolhead.get_last_move_time()
-        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
+        self.trapq_append(self.trapq[axis], print_time, accel_t, cruise_t, accel_t,
                           0., 0., 0., axis_r, 0., 0., 0., cruise_v, accel)
         print_time = print_time + accel_t + cruise_t + accel_t
-        self.motion_queuing.note_mcu_movequeue_activity(print_time)
-        toolhead.dwell(accel_t + cruise_t + accel_t)
-        toolhead.flush_step_generation()
+        move_time = accel_t + cruise_t + accel_t
+        if not queue_several:
+            self.finalize_manual_move(move_time, print_time, stepper, axis, prev_sk, prev_trapq)
+        return print_time, move_time
+
+    def finalize_manual_move(self, move_time, print_time, stepper, axis='x', prev_sk=None, prev_trapq=None, queue_several=False):
+        if not queue_several:
+            toolhead = self.printer.lookup_object('toolhead')
+            self.motion_queuing.note_mcu_movequeue_activity(print_time)
+            toolhead.dwell(move_time)
+            toolhead.flush_step_generation()
+        prev_trapq = stepper.get_pre_jog_trapq() if prev_trapq is None else prev_trapq
         stepper.set_trapq(prev_trapq)
+        prev_sk = stepper.get_pre_jog_kinematics() if prev_sk is None else prev_sk
         stepper.set_stepper_kinematics(prev_sk)
-        self.motion_queuing.wipe_trapq(self.trapq)
+        stepper.reset_pre_jog_kinematics()
+        stepper.reset_pre_jog_trapq()
+        if not queue_several:
+            self.motion_queuing.wipe_trapq(self.trapq[axis])
+
+    def manual_move_axis(self, axis, distance, speed, accel = 0.):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.flush_step_generation()
+        steppers = toolhead.get_kinematics().get_steppers()
+        finalize_list = []
+        max_print_time, max_move_time = 0., 0.
+        for stepper in steppers:
+            if stepper.is_active_axis(axis.lower()):
+                finalize_list.append(stepper)
+                print_time, move_time = self.manual_move(stepper, distance, speed, accel, queue_several=True, axis=axis.lower())
+                max_print_time = max(max_print_time, print_time)
+                max_move_time = max(max_move_time, move_time)
+        return finalize_list, max_print_time, max_move_time
+
+    def finalize_move_all_axes(self, finalize_list, max_print_time, max_move_time):
+        toolhead = self.printer.lookup_object('toolhead')
+        self.motion_queuing.note_mcu_movequeue_activity(max_print_time)
+        toolhead.dwell(max_move_time)
+        toolhead.flush_step_generation()
+        for stepper in finalize_list:
+            self.finalize_manual_move(max_move_time, max_print_time, stepper, queue_several=True)
+
     cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
     def cmd_STEPPER_BUZZ(self, gcmd):
         stepper = self.lookup_stepper(gcmd.get('STEPPER'))

@@ -51,6 +51,8 @@ class MCU_stepper:
             self._syncemitter)
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._stepper_kinematics = None
+        self.pre_jog_kinematics = None
+        self.pre_jog_trapq = None
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
         self._step_cmd = self._dir_cmd = None
@@ -117,10 +119,10 @@ class MCU_stepper:
                                       invert_step, step_pulse_ticks))
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
-        self._step_cmd = self._mcu.lookup_command("queue_step oid=%c interval=%u count=%hu add=%hi")
-        self._dir_cmd = self._mcu.lookup_command("set_next_step_dir oid=%c dir=%c")
-        step_cmd_tag = self._step_cmd.get_command_tag()
-        dir_cmd_tag = self._dir_cmd.get_command_tag()
+        step_cmd_tag = self._mcu.lookup_command(
+            "queue_step oid=%c interval=%u count=%hu add=%hi").get_command_tag()
+        dir_cmd_tag = self._mcu.lookup_command(
+            "set_next_step_dir oid=%c dir=%c").get_command_tag()
         self._reset_cmd_tag = self._mcu.lookup_command(
             "reset_step_clock oid=%c clock=%u").get_command_tag()
         self._get_position_cmd = self._mcu.lookup_query_command(
@@ -130,26 +132,6 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_fill(self._stepqueue, self._oid, max_error_ticks,
                                   step_cmd_tag, dir_cmd_tag)
-
-    def low_level_move(self, distance, direction):
-        ffi_main, ffi_lib = chelper.get_ffi()
-        motion_queuing = self._mcu.get_printer().lookup_object('motion_queuing')
-        reactor = self._mcu.get_printer().reactor
-        steps = int(distance / self.get_step_dist())
-        est_print_time = self._mcu.estimated_print_time(reactor.monotonic())
-
-        interval = 1000 #self._mcu.seconds_to_clock(self._step_pulse_duration)
-        data = (self._dir_cmd.get_command_tag(), self._oid, direction)
-        ffi_lib.syncemitter_queue_msg(self._syncemitter, 0, data, len(data))
-        data = (self._step_cmd.get_command_tag(), self._oid, interval, steps, 0)
-        ffi_lib.syncemitter_queue_msg(self._syncemitter, 0, data, len(data))
-
-        motion_queuing.note_mcu_movequeue_activity(est_print_time-(steps*interval), is_step_gen=False)
-
-        # motion_queuing.note_mcu_movequeue_activity(est_print_time)
-        # motion_queuing._advance_flush_time(est_print_time, est_print_time + 0.700)
-        # ffi_lib.steppersyncmgr_gen_steps(motion_queuing.get_steppersyncmgr(), est_print_time, est_print_time + 0.250, est_print_time)
-
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
@@ -212,16 +194,24 @@ class MCU_stepper:
     def get_stepper_kinematics(self):
         return self._stepper_kinematics
     def set_stepper_kinematics(self, sk):
-        old_sk = self._stepper_kinematics
         mcu_pos = 0
-        if old_sk is not None:
+        self.pre_jog_kinematics = self._stepper_kinematics
+        if self.pre_jog_kinematics is not None:
             mcu_pos = self.get_mcu_position()
         self._stepper_kinematics = sk
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.syncemitter_set_stepper_kinematics(self._syncemitter, sk);
         self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
-        return old_sk
+        return self.pre_jog_kinematics
+    def get_pre_jog_kinematics(self):
+        return self.pre_jog_kinematics
+    def reset_pre_jog_kinematics(self):
+        self.pre_jog_kinematics = None
+    def get_pre_jog_trapq(self):
+            return self.pre_jog_trapq
+    def reset_pre_jog_trapq(self):
+        self.pre_jog_trapq = None
     def note_homing_end(self):
         ffi_main, ffi_lib = chelper.get_ffi()
         ret = ffi_lib.stepcompress_reset(self._stepqueue, 0)
