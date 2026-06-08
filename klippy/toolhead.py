@@ -635,7 +635,6 @@ class ToolHeadCommandHelper:
 
     def cmd_jog_move(self,gcmd):
         if self.printer.is_jogging():
-            gcmd.ack()
             params = gcmd.get_command_parameters()
             axis_map = {'X': 0, 'Y': 1, 'Z': 2}
             # gcode_speed = gcmd.get_float('F',None, above=0.) speeds?

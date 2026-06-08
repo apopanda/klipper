@@ -117,7 +117,6 @@ class MCU_stepper:
                                       invert_step, step_pulse_ticks))
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
-        # cmd_queue = self._mcu.get_dispatch().get_command_queue()
         self._step_cmd = self._mcu.lookup_command("queue_step oid=%c interval=%u count=%hu add=%hi")
         self._dir_cmd = self._mcu.lookup_command("set_next_step_dir oid=%c dir=%c")
         step_cmd_tag = self._step_cmd.get_command_tag()
@@ -133,9 +132,24 @@ class MCU_stepper:
                                   step_cmd_tag, dir_cmd_tag)
 
     def low_level_move(self, distance, direction):
-        self._dir_cmd.send([self.get_oid(), direction])
-        duration = self._mcu.seconds_to_clock(self._step_pulse_duration)
-        self._step_cmd.send([self.get_oid(), duration, int(distance // self.get_step_dist()),0])
+        ffi_main, ffi_lib = chelper.get_ffi()
+        motion_queuing = self._mcu.get_printer().lookup_object('motion_queuing')
+        reactor = self._mcu.get_printer().reactor
+        steps = int(distance / self.get_step_dist())
+        est_print_time = self._mcu.estimated_print_time(reactor.monotonic())
+
+        interval = 1000 #self._mcu.seconds_to_clock(self._step_pulse_duration)
+        data = (self._dir_cmd.get_command_tag(), self._oid, direction)
+        ffi_lib.syncemitter_queue_msg(self._syncemitter, 0, data, len(data))
+        data = (self._step_cmd.get_command_tag(), self._oid, interval, steps, 0)
+        ffi_lib.syncemitter_queue_msg(self._syncemitter, 0, data, len(data))
+
+        motion_queuing.note_mcu_movequeue_activity(est_print_time-(steps*interval), is_step_gen=False)
+
+        # motion_queuing.note_mcu_movequeue_activity(est_print_time)
+        # motion_queuing._advance_flush_time(est_print_time, est_print_time + 0.700)
+        # ffi_lib.steppersyncmgr_gen_steps(motion_queuing.get_steppersyncmgr(), est_print_time, est_print_time + 0.250, est_print_time)
+
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
