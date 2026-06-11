@@ -635,13 +635,14 @@ class ToolHeadCommandHelper:
 
     def cmd_jog_move(self,gcmd):
         if self.printer.is_jogging():
+            self.toolhead.flush_step_generation()
             fmove = self.printer.lookup_object('force_move')
             steppers_to_move = []
             params = gcmd.get_command_parameters()
             axis_map = {'X': 0, 'Y': 1, 'Z': 2}
-            speed = gcmd.get_float('S',None, above=0.)
-            acceleration = gcmd.get_float('F', None, above=0.)
-            max_print_time, max_move_time = 0., 0.
+            speed = gcmd.get_float('S', 0., above=0.)
+            acceleration = gcmd.get_float('F', 0., above=0.)
+            max_print_time = max_move_time = 0.
             for axis, pos in axis_map.items():
                 if axis in params:
                     dist = float(params[axis])
@@ -650,8 +651,6 @@ class ToolHeadCommandHelper:
                     max_print_time = max(max_print_time, max_axis_print_time)
                     max_move_time = max(max_move_time, max_axis_move_time)
             fmove.finalize_move_all_axes(steppers_to_move, max_print_time, max_move_time)
-            for axis in axis_map.items():
-                self.toolhead.motion_queuing.wipe_trapq(fmove.trapq[axis])
         else:
             gcmd.respond_info('Not in jogging mode. Enable with gcode command JOG')
 
