@@ -246,6 +246,7 @@ class MCU_stepper:
                                     tq, self._step_dist)
         old_tq = self._trapq
         self._trapq = tq
+        self.pre_jog_trapq = old_tq
         return old_tq
     def add_active_callback(self, cb):
         self._active_callbacks.append(cb)

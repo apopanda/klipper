@@ -27,6 +27,28 @@ def calc_move_time(dist, speed, accel):
     cruise_t = (dist - accel_decel_d) / speed
     return axis_r, accel_t, cruise_t, speed
 
+def normalize(distances = []):
+    magnitude = magnitude_v(distances)
+    return list(map(lambda dist: dist / magnitude, distances))
+
+def magnitude_v(distances):
+    return math.sqrt(sum([d * d for d in distances[:3]]))
+
+def calc_moves_time(speed, accel, dist = [0.,0.,0.]):
+    axis_r = normalize(dist)
+    distances = list(map(lambda distance: abs(distance), dist))
+    magnitude = magnitude_v(distances)
+
+    if not accel or not magnitude:
+        return axis_r, 0., magnitude / speed, speed
+    max_cruise_v2 = magnitude * accel
+    if max_cruise_v2 < speed**2:
+        speed = math.sqrt(max_cruise_v2)
+    accel_t = speed / accel
+    accel_decel_d = accel_t * speed
+    cruise_t = (magnitude - accel_decel_d) / speed
+    return axis_r, accel_t, cruise_t, speed
+
 class ForceMove:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -78,71 +100,54 @@ class ForceMove:
         stepper_name = stepper.get_name()
         stepper_enable = self.printer.lookup_object('stepper_enable')
         stepper_enable.set_motors_enable([stepper_name], False)
-    def manual_move(self, stepper, dist, speed, accel=0., queue_several=False, axis='x'):
+
+    def manual_move(self, stepper, dist, speed, accel=0.):
         toolhead = self.printer.lookup_object('toolhead')
-        if not queue_several:
-            toolhead.flush_step_generation()
-
-        prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics[axis])
+        toolhead.flush_step_generation()
+        prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics)
         prev_trapq = stepper.set_trapq(self.trapq)
-
         stepper.set_position((0., 0., 0.))
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(dist, speed, accel)
         print_time = toolhead.get_last_move_time()
-
-        x = axis_r if axis is 'x' else 0.
-        y = axis_r if axis is 'y' else 0.
-        z = axis_r if axis is 'z' else 0.
-        self.trapq_append(self.trapq, print_time,
-                          accel_t, cruise_t, accel_t,
-                          0., 0., 0., x, y, z,
-                          0., cruise_v, accel)
-
+        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
+                          0., 0., 0., axis_r, 0., 0., 0., cruise_v, accel)
         print_time = print_time + accel_t + cruise_t + accel_t
-        move_time = accel_t + cruise_t + accel_t
-        if not queue_several:
-            self.finalize_manual_move(move_time, print_time, stepper, axis, prev_sk, prev_trapq)
-        return print_time, move_time
-
-    def finalize_manual_move(self, move_time, print_time, stepper, prev_sk=None, prev_trapq=None, queue_several=False):
-        toolhead = self.printer.lookup_object('toolhead')
         self.motion_queuing.note_mcu_movequeue_activity(print_time)
-        toolhead.dwell(move_time)
+        toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
-        self.restore_kinematics_trapq(prev_sk, prev_trapq, stepper)
-        if not queue_several:
-            self.motion_queuing.wipe_trapq(self.trapq)
-
-    def restore_kinematics_trapq(self, prev_sk, prev_trapq, stepper):
-        prev_trapq = stepper.get_pre_jog_trapq() if prev_trapq is None else prev_trapq
         stepper.set_trapq(prev_trapq)
-        prev_sk = stepper.get_pre_jog_kinematics() if prev_sk is None else prev_sk
         stepper.set_stepper_kinematics(prev_sk)
-        stepper.reset_pre_jog_kinematics()
-        stepper.reset_pre_jog_trapq()
+        self.motion_queuing.wipe_trapq(self.trapq)
 
-    def manual_move_axis(self, axis, distance, speed, accel = 0.):
+    def manual_move_multiple(self, speed, dist=[], accel=0.):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.flush_step_generation()
         steppers = toolhead.get_kinematics().get_steppers()
-        finalize_list = []
-        max_print_time, max_move_time = 0., 0.
-        for stepper in steppers:
-            if stepper.is_active_axis(axis.lower()):
-                finalize_list.append(stepper)
-                print_time, move_time = self.manual_move(stepper, distance, speed, accel, queue_several=True, axis=axis.lower())
-                max_print_time = max(max_print_time, print_time)
-                max_move_time = max(max_move_time, move_time)
-        return finalize_list, max_print_time, max_move_time
+        axis_map = {'X': 0, 'Y': 1, 'Z': 2}
 
-    def finalize_move_all_axes(self, finalize_list, max_print_time, max_move_time):
-        toolhead = self.printer.lookup_object('toolhead')
-        self.motion_queuing.note_mcu_movequeue_activity(max_print_time)
-        toolhead.dwell(max_move_time)
+        for stepper in steppers:
+            for axis, pos in axis_map.items():
+                if stepper.is_active_axis(axis.lower()):
+                    stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
+            stepper.set_trapq(self.trapq)
+            stepper.set_position((0., 0., 0.))
+        axis_r, accel_t, cruise_t, cruise_v = calc_moves_time(speed, accel, dist)
+        print_time = toolhead.get_last_move_time()
+        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
+                          0., 0., 0.,
+                          axis_r[axis_map['X']], axis_r[axis_map['Y']], axis_r[axis_map['Z']],
+                          0., cruise_v, accel)
+        print_time = print_time + accel_t + cruise_t + accel_t
+        self.motion_queuing.note_mcu_movequeue_activity(print_time)
+        toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
-        for stepper in finalize_list:
-            self.finalize_manual_move(max_move_time, max_print_time, stepper, queue_several=True)
+        for stepper in steppers:
+            stepper.set_trapq(stepper.get_pre_jog_trapq())
+            stepper.set_stepper_kinematics(stepper.get_pre_jog_kinematics())
+            stepper.reset_pre_jog_kinematics()
+            stepper.reset_pre_jog_trapq()
         self.motion_queuing.wipe_trapq(self.trapq)
+
     cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
     def cmd_STEPPER_BUZZ(self, gcmd):
         stepper = self.lookup_stepper(gcmd.get('STEPPER'))
